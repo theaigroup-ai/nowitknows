@@ -1,0 +1,1 @@
+For each skill listed, write 10 short requests a user might type when that skill should be loaded. Vary the wording: include phrasings that avoid the skill's own words, name concrete files, tools, or symptoms, and mix questions with commands. Keep each under 15 words. Return them in `skills`, using the exact skill names given.

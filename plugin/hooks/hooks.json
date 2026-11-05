@@ -1,0 +1,95 @@
+{
+  "description": "nowitknows lifecycle hooks. Each runs bin/nowitknows.sh with its event which runs the plugin environment's own Python once bin/bootstrap.sh, the background setup and the only part of nowitknows that runs uv, has marked that environment ready for this uv.lock, so no hook waits on uv's lock or a download. Every hook exits 0, since a hook's exit 2 blocks the prompt, tool call, or stop. Until the environment is ready the hooks do nothing, and SessionStart alone says what a fresh install lacks: no uv, a uv older than 0.9.5, or the environment, which it has bin/bootstrap.sh set up in the background, outside the hook's process group, recorded in bootstrap.pid in nowitknows's data folder.",
+  "modules": ["./register.ts"],
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/nowitknows.sh\" hook SessionStart",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/nowitknows.sh\" hook UserPromptSubmit",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolBatch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/nowitknows.sh\" hook PostToolBatch",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/nowitknows.sh\" hook PreToolUse",
+            "timeout": 5
+          }
+        ],
+        "matcher": "Write|Edit|MultiEdit"
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/nowitknows.sh\" hook Stop",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/nowitknows.sh\" hook PreCompact",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/nowitknows.sh\" hook SessionEnd",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "InstructionsLoaded": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/nowitknows.sh\" hook InstructionsLoaded",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

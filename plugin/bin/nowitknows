@@ -1,0 +1,3 @@
+#!/bin/sh
+# The name the MCP server and hooks module start: Windows finds nowitknows.cmd for it and cannot start a .sh file.
+exec "${0%/*}/nowitknows.sh" "$@"

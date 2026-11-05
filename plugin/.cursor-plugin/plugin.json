@@ -1,0 +1,15 @@
+{
+  "name": "nowitknows-cursor",
+  "displayName": "NowItKnows",
+  "version": "0.11.6",
+  "description": "Learning for Cursor: reusable skills, past chat search, personal memory, and background learning reviewed by an independent judge.",
+  "author": {
+    "name": "Aron Riley"
+  },
+  "homepage": "https://github.com/theaigroup-ai/nowitknows",
+  "repository": "https://github.com/theaigroup-ai/nowitknows",
+  "license": "MIT",
+  "skills": "./cursor/skills/",
+  "hooks": "./cursor/hooks.json",
+  "mcpServers": "./cursor/mcp.json"
+}

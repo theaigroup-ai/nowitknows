@@ -1,0 +1,8 @@
+{
+  "name": "nowitknows-cursor-runner",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=22.13.0"},
+  "dependencies": {"@cursor/sdk": "1.0.38"}
+}

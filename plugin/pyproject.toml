@@ -1,0 +1,27 @@
+[project]
+name = "nowitknows"
+version = "0.11.6"
+description = "NowItKnows for Claude Code and Codex: skill-use protocol and router, past-session search, global memory, and background skill learning reviewed by an adversarial judge"
+requires-python = ">=3.14"  # its standard library reads Codex's zstd history
+license = "MIT"
+# cryptography (mcp's dependency) dropped these platforms' wheels after 48.0.1, and win_arm64's after 46.0.3.
+dependencies = [
+    "mcp>=1.30",
+    "cryptography<49; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "cryptography<46.0.4; sys_platform == 'win32' and platform_machine == 'ARM64'",
+    "cryptography<49; sys_platform == 'win32' and platform_machine != 'AMD64' and platform_machine != 'x86_64' and platform_machine != 'ARM64'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"  # no newer syntax: a hook can still start on an older venv (uv --no-sync)
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["E741", "RUF001", "RUF002", "RUF003", "SIM105", "B008"]

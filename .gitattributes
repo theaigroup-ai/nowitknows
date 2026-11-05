@@ -1,0 +1,4 @@
+# Auto detect text files and check them out with LF on every OS, so file bytes and sizes match everywhere
+* text=auto eol=lf
+# cmd.exe misreads labels in a batch file without CRLF
+*.cmd text eol=crlf

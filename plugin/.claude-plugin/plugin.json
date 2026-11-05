@@ -1,0 +1,75 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "nowitknows",
+  "version": "0.11.6",
+  "description": "NowItKnows for Claude Code: skill-use protocol and router, past-session search, global memory, and background skill learning reviewed by an adversarial judge.",
+  "author": {
+    "name": "Aron Riley"
+  },
+  "homepage": "https://github.com/theaigroup-ai/nowitknows",
+  "repository": "https://github.com/theaigroup-ai/nowitknows",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "skills",
+    "learning"
+  ],
+  "mcpServers": {
+    "nowitknows": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/nowitknows",
+      "args": [
+        "mcp"
+      ]
+    }
+  },
+  "userConfig": {
+    "metrics": {
+      "type": "boolean",
+      "title": "Local session counts",
+      "description": "Collect local token and session counts for the report. No conversation text is stored in metrics.",
+      "default": true
+    },
+    "review": {
+      "type": "boolean",
+      "title": "Background learning",
+      "description": "Run background reviews that update skills and memory (uses your Claude plan).",
+      "default": true
+    },
+    "reviewer_model": {
+      "type": "string",
+      "title": "Reviewer model",
+      "description": "Model that proposes skill and memory updates.",
+      "default": "sonnet"
+    },
+    "judge_model": {
+      "type": "string",
+      "title": "Judge model",
+      "description": "Model that adversarially reviews each background skill change and project note before it applies.",
+      "default": "opus"
+    },
+    "os_notify": {
+      "type": "boolean",
+      "title": "Desktop notifications",
+      "description": "Also send NowItKnows change notices as terminal desktop notifications (OSC 9).",
+      "default": false
+    },
+    "allow_extra_usage": {
+      "type": "boolean",
+      "title": "Learn while extra usage is on",
+      "description": "Run background learning while paid extra usage is on for your Claude account; runs past your plan's limits are then billed as extra usage. Off keeps learning inside your plan: reviews in an open session pause at your plan's limits, and reviews outside a session pause while extra usage is on, or wherever Claude Code has not cached your account details (always with a `claude setup-token` login).",
+      "default": true
+    },
+    "share_project_notes": {
+      "type": "boolean",
+      "title": "Share project notes",
+      "description": "Share project notes between Claude Code and Codex in Claude's memory folder for each repo. This option changes Claude Code only; in Codex use the NowItKnows setup skill's configure share_project_notes=off, or run /nowitknows:setup --separate-notes to set both.",
+      "default": true
+    },
+    "bounded_review_skills": {
+      "type": "boolean",
+      "title": "Trim skill text in reviews",
+      "description": "Background reviews in a session paste the full text only of skills the session loaded and skills NowItKnows may change; your other skills keep their one-line listing. Off pastes every listed skill while room allows. This option changes Claude Code only; in Codex use the NowItKnows setup skill's configure bounded_review_skills=off.",
+      "default": true
+    }
+  }
+}

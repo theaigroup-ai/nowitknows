@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "nowitknows": {
+      "command": "/bin/sh",
+      "args": [
+        "${CURSOR_PLUGIN_ROOT}/bin/nowitknows.sh",
+        "--cursor",
+        "mcp"
+      ]
+    }
+  }
+}

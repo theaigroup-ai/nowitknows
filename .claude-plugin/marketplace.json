@@ -1,0 +1,14 @@
+{
+  "name": "nowitknows",
+  "description": "NowItKnows: skills and memory for Claude Code",
+  "owner": {
+    "name": "Aron Riley"
+  },
+  "plugins": [
+    {
+      "name": "nowitknows",
+      "source": "./plugin",
+      "description": "Skill-use protocol and router, past-session search, global memory, and background skill learning reviewed by an adversarial judge. Runs only on your Claude subscription."
+    }
+  ]
+}

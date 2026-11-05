@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "\"${CURSOR_PLUGIN_ROOT}/bin/nowitknows.sh\" --cursor hook sessionStart",
+        "timeout": 10
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "\"${CURSOR_PLUGIN_ROOT}/bin/nowitknows.sh\" --cursor hook beforeSubmitPrompt",
+        "timeout": 5
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "\"${CURSOR_PLUGIN_ROOT}/bin/nowitknows.sh\" --cursor hook preToolUse",
+        "timeout": 5
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "\"${CURSOR_PLUGIN_ROOT}/bin/nowitknows.sh\" --cursor hook postToolUse",
+        "timeout": 5
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "command": "\"${CURSOR_PLUGIN_ROOT}/bin/nowitknows.sh\" --cursor hook postToolUseFailure",
+        "timeout": 5
+      }
+    ],
+    "stop": [
+      {
+        "command": "\"${CURSOR_PLUGIN_ROOT}/bin/nowitknows.sh\" --cursor hook stop",
+        "timeout": 5
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "\"${CURSOR_PLUGIN_ROOT}/bin/nowitknows.sh\" --cursor hook sessionEnd",
+        "timeout": 10
+      }
+    ],
+    "preCompact": [
+      {
+        "command": "\"${CURSOR_PLUGIN_ROOT}/bin/nowitknows.sh\" --cursor hook preCompact",
+        "timeout": 5
+      }
+    ]
+  }
+}

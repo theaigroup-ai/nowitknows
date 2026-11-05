@@ -1,0 +1,102 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "(root=\"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}\"; if [ -z \"$root\" ]; then exit 1; fi; /bin/sh \"$root/bin/nowitknows.sh\" --codex hook SessionStart); exit 0",
+            "timeout": 10,
+            "statusMessage": "nowitknows: load memory and skill guide",
+            "additionalContextLimit": 30000
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "(root=\"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}\"; if [ -z \"$root\" ]; then exit 1; fi; /bin/sh \"$root/bin/nowitknows.sh\" --codex hook UserPromptSubmit); exit 0",
+            "timeout": 5,
+            "statusMessage": "nowitknows: match skills and notes to each prompt",
+            "additionalContextLimit": 30000
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "(root=\"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}\"; if [ -z \"$root\" ]; then exit 1; fi; /bin/sh \"$root/bin/nowitknows.sh\" --codex hook PreToolUse); exit 0",
+            "timeout": 1,
+            "statusMessage": "nowitknows: guard project notes from direct edits"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "(root=\"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}\"; if [ -z \"$root\" ]; then exit 1; fi; /bin/sh \"$root/bin/nowitknows.sh\" --codex hook PostToolUse); exit 0",
+            "timeout": 1,
+            "statusMessage": "nowitknows: record skill reads and searches"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "(root=\"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}\"; if [ -z \"$root\" ]; then exit 1; fi; /bin/sh \"$root/bin/nowitknows.sh\" --codex hook Stop); exit 0",
+            "timeout": 1,
+            "statusMessage": "nowitknows: queue learning after each reply"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "(root=\"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}\"; if [ -z \"$root\" ]; then exit 1; fi; /bin/sh \"$root/bin/nowitknows.sh\" --codex hook SessionEnd); exit 0",
+            "timeout": 10,
+            "statusMessage": "nowitknows: queue learning when the session ends"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "(root=\"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}\"; if [ -z \"$root\" ]; then exit 1; fi; /bin/sh \"$root/bin/nowitknows.sh\" --codex hook PreCompact); exit 0",
+            "timeout": 1,
+            "statusMessage": "nowitknows: queue learning before compaction"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "(root=\"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}\"; if [ -z \"$root\" ]; then exit 1; fi; /bin/sh \"$root/bin/nowitknows.sh\" --codex hook PostCompact); exit 0",
+            "timeout": 1,
+            "statusMessage": "nowitknows: resend skills after compaction"
+          }
+        ]
+      }
+    ]
+  }
+}

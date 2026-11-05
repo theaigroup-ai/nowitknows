@@ -1,0 +1,20 @@
+{
+  "name": "nowitknows-codex-local",
+  "interface": {
+    "displayName": "NowItKnows for Codex"
+  },
+  "plugins": [
+    {
+      "name": "nowitknows-codex",
+      "source": {
+        "source": "local",
+        "path": "./plugins/nowitknows-codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

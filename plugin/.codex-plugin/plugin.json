@@ -1,0 +1,37 @@
+{
+  "name": "nowitknows-codex",
+  "version": "0.11.6",
+  "description": "Learning for Codex: reusable skills, past chat search, personal memory, and background learning reviewed by an independent judge.",
+  "author": {
+    "name": "Aron Riley"
+  },
+  "homepage": "https://github.com/theaigroup-ai/nowitknows",
+  "repository": "https://github.com/theaigroup-ai/nowitknows",
+  "license": "MIT",
+  "skills": "./codex/skills/",
+  "hooks": "./codex/hooks.json",
+  "mcpServers": {
+    "nowitknows": {
+      "command": "/bin/sh",
+      "args": [
+        "-c",
+        "h=${CODEX_HOME:-$HOME/.codex}; case $h in \"~/\"*) h=$HOME/${h#\"~/\"} ;; esac; f=\"$h/plugins/cache/nowitknows/nowitknows-codex/0.11.6/bin/nowitknows.sh\"; [ -f \"$f\" ] || { echo \"nowitknows: no MCP server at $f; add the catalog as the marketplace named nowitknows and reinstall nowitknows-codex\" >&2; exit 1; }; exec /bin/sh \"$f\" --codex mcp"
+      ],
+      "env_vars": [
+        "CODEX_HOME",
+        "NOWITKNOWS_CODEX_HOME",
+        "NOWITKNOWS_SHARED_DATA_DIR",
+        "NOWITKNOWS_DATA_DIR",
+        "NOWITKNOWS_CODEX_DATA_DIR",
+        "NOWITKNOWS_CODEX_SKILLS_DIR",
+        "NOWITKNOWS_CODEX_BIN",
+        "LEARNLOOP_CODEX_HOME",
+        "LEARNLOOP_SHARED_DATA_DIR",
+        "LEARNLOOP_DATA_DIR",
+        "LEARNLOOP_CODEX_DATA_DIR",
+        "LEARNLOOP_CODEX_SKILLS_DIR",
+        "LEARNLOOP_CODEX_BIN"
+      ]
+    }
+  }
+}
