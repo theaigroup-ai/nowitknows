@@ -14,12 +14,12 @@ No prompts to write. No skills to maintain. It learns from what you tell it and 
 
 | When | What Nik does | What we measured |
 |---|---|---|
-| You've told your agent how something works | Remembers it in later sessions | **24 of 24** tasks with Nik, vs 8 without on Claude Code and 6 without on Codex. The skill loaded in **18 of 18** later sessions |
+| You've told your agent how something works | Remembers it in later sessions | **24 of 24** tasks with Nik, vs 8 without on Claude Code and 7 without on Codex. The skill loaded in **18 of 18** later sessions |
 | The answer is in the repo, if your agent looks | Often works it out and keeps it | Saved a correct skill in **3 of 6** task sequences on Claude Code and **5 of 6** on Codex, and no wrong ones. Tasks passed came out about even |
-| Your agent would otherwise wander | Goes straight to what worked | **34% fewer tokens** on the task where it wandered most, once taught |
+| Your agent would otherwise wander | Goes straight to what worked | **33% fewer tokens** on the task where it wandered most, once taught |
 | Your agent already gets it right | Adds little | **16% more tokens** on Claude Code, 9% fewer on Codex |
 
-Across all three tasks, once taught: 12% fewer tokens on Claude Code, 7% fewer on Codex. With no teaching: 20% more on Claude Code, about even on Codex. Nik is for getting it right without repeating yourself. It isn't a token saver everywhere. [The fine print](#the-fine-print).
+Across all three tasks, once taught: 12% fewer tokens on Claude Code, 6% fewer on Codex. With no teaching: 20% more on Claude Code, about even on Codex. Nik is for getting it right without repeating yourself. It isn't a token saver everywhere. [The fine print](#the-fine-print).
 
 ## Install
 

@@ -13,6 +13,7 @@ import shlex
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 from . import config as C
 from . import native, outcome, safety, sessions
@@ -279,7 +280,10 @@ class _Reader:
             original := self.running_commands.get(str(args.get("session_id")))
         ):
             self.poll_calls[identity] = original
+        command_cwd = ""
         if name.removeprefix("functions.") in _COMMANDS:
+            command_cwd = next((args[k] for k in ("workdir", "cwd", "working_directory") if k in args), self.cwd)
+            command_cwd = _command_directory(command_cwd)
             command = args.get("command", args.get("cmd"))
             if isinstance(command, list) and all(isinstance(v, str) for v in command):
                 shell = len(command) == 3 and Path(command[0]).name in {"sh", "bash", "zsh", "dash", "ksh"}
@@ -294,9 +298,12 @@ class _Reader:
             safe_args = {selected: what}
         else:
             safe_args = {safety.redact(str(k))[: C.TOOL_ARG_CHARS]: None for k in args}
+        if C.tool_name(name) == "skill_view" and safe_args.get("file_path") and isinstance(args.get("name"), str):
+            safe_args["name"] = safety.redact(args["name"])[: C.TOOL_ARG_CHARS]
         row = self.row("assistant", line, raw)
         block = {"type": "tool_use", "id": identity or row["uuid"], "name": name, "input": safe_args}
         if name == "Codex.command" and isinstance(args.get("command"), str):
+            block["command_cwd"] = command_cwd
             block["outcome_command"] = outcome.command_text(args["command"])
             block["outcome_success_output"] = outcome.success_output_allowed(args["command"], self.cwd)
             if block["outcome_success_output"]:
@@ -414,6 +421,8 @@ class _Reader:
             identity = _string(item.get("id"))
             if kind in {"CommandExecution", "commandExecution"}:
                 name, args = "Codex.command", {"command": item.get("command")}
+                if "cwd" in item:
+                    args["cwd"] = item["cwd"]
                 output = {
                     "output": item.get("aggregated_output", item.get("aggregatedOutput")),
                     "exit_code": item.get("exit_code", item.get("exitCode")),
@@ -760,6 +769,20 @@ def _merge_content(before, after):
                     merged[match]["is_error"] = old.get("is_error", False) or block.get("is_error", False)
         return merged
     return before or after
+
+
+def _command_directory(value) -> str:
+    """Keep a known absolute command directory, including native file URIs, outside the rendered arguments."""
+    if not isinstance(value, str):
+        return ""
+    if value.startswith("file:"):
+        parsed = urlsplit(value)
+        if parsed.netloc not in ("", "localhost") or parsed.query or parsed.fragment:
+            return ""
+        value = unquote(parsed.path)
+        if C.WINDOWS and re.match(r"^/[A-Za-z]:/", value):
+            value = value[1:]
+    return safety.redact(str(Path(value))) if Path(value).is_absolute() and len(value) <= C.TOOL_ARG_CHARS else ""
 
 
 def _bounded_commands(rows: list[dict]) -> None:

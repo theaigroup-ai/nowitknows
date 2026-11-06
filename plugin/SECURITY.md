@@ -21,6 +21,8 @@ In scope, among others:
 - Content that bypasses the safety scan into memory or a skill (prompt-injection phrases, secret shapes, hidden characters), or a background skill change that applies without passing the judge.
 - Deleting user data instead of archiving or ledgering it.
 
+Known limit: secret masking is pattern matching, and ordinary prose is sometimes masked too. A credential split across two lines inside a proposed skill change can reach the reviewing model unmasked, because a diff's line prefixes hide the pair from the detector.
+
 Out of scope: vulnerabilities in Claude Code itself (report those to Anthropic); residual risks from settings from the Windows registry, MDM profiles, or server-delivered managed settings; TLS-intercepting proxies; extra usage on a setup-token login; Claude Code's cached extra usage flag being up to about a day old; text you typed or pasted into a session, secrets included, reaching the local search index, review digests, or the debug log (nowitknows keeps session text on your machine, as Claude Code's transcripts do); and what a model writes into a skill the judge passed, unless it carries secrets or injection the scan should have refused.
 
 

@@ -553,13 +553,29 @@ class SkillStore:
             return {"ok": False, "error": f"unknown action {action!r}; deletion is intentionally unsupported"}
         if err := self.writable(name):
             return {"ok": False, "error": err}
-        current = self.read(name)
         replacement = change.get("new_string" if action == "patch" else "content", "")
-        if "[redacted]" in replacement:
+        if "[redacted]" in (replacement or ""):
             return {
                 "ok": False,
                 "error": "the value was masked in your copy; patch around it without copying [redacted] into new text",
             }
+        fp = norm_file(change.get("file_path")) if action in ("patch", "edit") else ""
+        if action in ("patch", "edit") and fp:
+            before = self.read(name, fp)
+            if before is None:
+                return {"ok": False, "error": "no such support file; use write_file to add one"}
+            content = change.get("content", "")
+            if action == "edit" and (not isinstance(content, str) or not content.strip()):
+                return {"ok": False, "error": "support edits require nonblank content"}
+            if action == "patch":
+                old = change.get("old_string", "")
+                count = before.count(old) if old else 0
+                if count != 1:
+                    return {"ok": False, "error": f"old_string matched {count} times; must match exactly once"}
+                content = before.replace(old, change.get("new_string", ""))
+            action = "write_file"
+            change = {**change, "action": action, "content": content}
+        current = self.read(name)
         warnings: list[str] = []
         if action == "create":
             if current is not None:
@@ -803,7 +819,7 @@ class SkillStore:
             size_warnings = _size_warnings(prepared.get("content") or "", prepared.get("file_path") or "")
             if size_warnings:
                 entry["warnings"] = size_warnings
-            if not norm_file(prepared.get("file_path")):  # a create's repo and mark; a SKILL.md change's mark again
+            if not norm_file(prepared.get("file_path")):
                 entry.update(
                     scope.on_apply(
                         self.cfg,
@@ -822,6 +838,9 @@ class SkillStore:
                 "entry": entry,
                 "content": prepared.get("content"),
                 "before": current,
+                "mode": stat.S_IMODE(path.stat().st_mode)
+                if prepared.get("file_path") and current is not None
+                else None,
                 "folder": self.resolved_folder(name),
                 "visible_folder": str(
                     self.folder(name) if os.path.lexists(self.cfg.skills_home / name) else self.cfg.skills_home / name
@@ -988,6 +1007,10 @@ class SkillStore:
                 durable_write(Path(entry["backup"]), value["before"])
             if sha(current) != entry["after"]:
                 durable_write(path, value["content"])
+            if value.get("mode") is not None:
+                path.chmod(value["mode"])
+        if norm_file(value["file_path"]).startswith("references/"):
+            entry.update(scope.on_apply(self.cfg, entry["action"], self.read(name), entry["skill_source"], None, None))
         known = jsonl_rows(self.ledger)
         if not any(r.get("application_id") == receipt.stem for r in known):
             append_line(self.ledger, json.dumps({**entry, "application_id": receipt.stem}))
@@ -1020,7 +1043,17 @@ class SkillStore:
         for i, findings in enumerate(rounds, 1):
             lines += ["", f"## Findings, round {i}"]
             lines += [f"- [{f.get('severity')}] {f.get('issue')} -> {f.get('fix')}" for f in findings]
-        lines += ["", "## Last proposed diff", "```diff", self.diff(change), "```"]
+        try:
+            diff = (
+                "(raw patch; proposed operation retained below)"
+                if change.get("action") == "patch" and "content" not in change
+                else self.diff(change)
+            )
+        except (OSError, ValueError):
+            if reason != "support write refused":
+                raise
+            diff = "(current support file is unreadable; proposed operation retained below)"
+        lines += ["", "## Last proposed diff", "```diff", diff, "```"]
         if reason == "support write refused":
             lines += ["", "## Proposed operation", "```json", json.dumps(change, ensure_ascii=False), "```"]
         atomic_write(path, redact("\n".join(lines)) + "\n")
@@ -1035,15 +1068,16 @@ class SkillStore:
             row["reason"] = reason
         log_row(self.cfg, "rejected.jsonl", row)
         if related and change["action"] == "write_file" and change.get("file_path") and change.get("run_id"):
-            finding = {"severity": "major", "issue": "support write rejected", "fix": "re-propose the move together"}
+            cause = "support write conflicted" if reason == "conflict" else "support write rejected"
+            finding = {"severity": "major", "issue": cause, "fix": "re-propose the move together"}
             for other in self.staged_changes(change["run_id"]):
                 if other["name"] == change["name"] and other["id"] != change["id"]:
-                    record = self.reject(other, [[finding]], reason="support write rejected", related=False)
+                    record = self.reject(other, [[finding]], reason=cause, related=False)
                     self.drop_staged(other["id"])
                     notify.push(
                         self.cfg,
                         f"{notify.PREFIX} skipped paired change to skill {other['name']}: "
-                        f"support write rejected; proposal kept {notify.link(record)}",
+                        f"{cause}; proposal kept {notify.link(record)}",
                     )
         return path
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import difflib
 import json
 
-from . import claude, model
+from . import claude, model, repo_skills
 from . import config as C
 from .safety import redact
 from .skills import size_label
@@ -59,10 +59,25 @@ def blocking(findings: list[dict]) -> bool:
 def _system(prompt: str, evidence: str) -> str:
     # Evidence sits in the system prompt so every judge call of one run shares a cacheable prefix.
     tail = redact(evidence)[-C.DIGEST_MAX_CHARS :]
-    return f"{(PROMPTS / prompt).read_text(encoding='utf-8')}\n\n<session_evidence>\n{tail}\n</session_evidence>"
+    body = (PROMPTS / prompt).read_text(encoding="utf-8")
+    return f"{body}\n\n<session_evidence>\n{tail}\n</session_evidence>"
 
 
-def judge_request(cfg: C.Config, change: dict, diff: str, current: str, evidence: str, existing: list[str]) -> dict:
+def with_repository_sources(cfg: C.Config, request: dict, change: dict) -> dict:
+    """Attach ephemeral source text only at delivery, never to stored settlement steps."""
+    return {**request, "prompt": request["prompt"] + repo_skills.sources(cfg, change)}
+
+
+def judge_request(
+    cfg: C.Config,
+    change: dict,
+    diff: str,
+    current: str,
+    evidence: str,
+    existing: list[str],
+    *,
+    include_repository: bool = True,
+) -> dict:
     case = (
         f"<change action='{change['action']}' skill='{change['name']}'>\n{diff}\n</change>\n\n"
         f"<current_skill>\n{current or '(new skill)'}\n</current_skill>\n\n"
@@ -77,7 +92,18 @@ def judge_request(cfg: C.Config, change: dict, diff: str, current: str, evidence
             )
             + "\n</staged_support_files>"
         )
-    return {
+    if change.get("skill_changes"):
+        case += (
+            "\n\nAn index entry in <staged_skill_changes> counts as proposed reference indexing.\n"
+            "<staged_skill_changes>\n"
+            + "\n".join(
+                f'<change action={json.dumps(item["action"])} file="SKILL.md" proposed="true">\n'
+                f"{item['content']}\n</change>"
+                for item in change["skill_changes"]
+            )
+            + "\n</staged_skill_changes>"
+        )
+    request = {
         "prompt": redact(case),
         "system": _system("judge.md", evidence),
         "model": cfg.judge_model,
@@ -86,6 +112,7 @@ def judge_request(cfg: C.Config, change: dict, diff: str, current: str, evidence
         "label": f"judge:{change['name']}",
         "run_id": change.get("run_id"),
     }
+    return with_repository_sources(cfg, request, change) if include_repository else request
 
 
 def note_request(
@@ -123,7 +150,15 @@ def judge_answer(out: dict, label: str) -> dict:
     return {"verdict": "fail" if failed else "pass", "findings": findings}
 
 
-def revision_request(cfg: C.Config, change: dict, current: str, findings: list[dict], evidence: str) -> dict:
+def revision_request(
+    cfg: C.Config,
+    change: dict,
+    current: str,
+    findings: list[dict],
+    evidence: str,
+    *,
+    include_repository: bool = True,
+) -> dict:
     issues = "\n".join(f"- [{f['severity']}] {f['issue']} -> {f['fix']}" for f in findings)
     prompt = (
         f"<change action='{change['action']}' skill='{change['name']}'/>\n\n<findings>\n{issues}\n</findings>\n\n"
@@ -131,7 +166,7 @@ def revision_request(cfg: C.Config, change: dict, current: str, findings: list[d
         f"{current or '(new skill)'}\n</current_skill>\n\n"
         f"{size_label(change.get('content') or '')}\n<proposed_file>\n{change.get('content') or ''}\n</proposed_file>"
     )
-    return {
+    request = {
         "prompt": redact(prompt),
         "system": _system("reviser.md", evidence),
         "model": cfg.reviewer_model,
@@ -140,6 +175,7 @@ def revision_request(cfg: C.Config, change: dict, current: str, findings: list[d
         "label": f"revise:{change['name']}",
         "run_id": change.get("run_id"),
     }
+    return with_repository_sources(cfg, request, change) if include_repository else request
 
 
 def revision_answer(out: dict, label: str) -> str:

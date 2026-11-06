@@ -10,7 +10,7 @@ import traceback
 import uuid
 from pathlib import Path
 
-from . import claude, judge, memorytidy, model, native, notejudge, notify, router, scope, sessions
+from . import claude, judge, memorytidy, model, native, notejudge, notify, repo_skills, router, scope, sessions
 from . import config as C
 from .memory import SOURCES
 from .safety import redact
@@ -195,6 +195,19 @@ def memory_targets(do_memory: bool, modes: native.Modes, caller: bool = False) -
     )
 
 
+def review_prompt(
+    cfg: C.Config, store: SkillStore, body: str, s: dict, cwd: str, start: str | Path, do_skills: bool
+) -> tuple[list[str], str]:
+    """Build the same reviewer metadata and prompt for production and saved-window replay."""
+    listing = existing_skills(store, body, set(s.get("skills", [])))
+    repository = repo_skills.listing(cfg, start) if do_skills else []
+    listing += repository
+    prompt = redact(digest(body, s, cwd, listing))
+    if repository:
+        prompt += "\n\n" + repo_skills.INSTRUCTION
+    return listing, prompt
+
+
 def reflector_system(memory: bool, skills: bool, modes: native.Modes, caller: bool = False) -> str:
     targets = memory_targets(memory, modes, caller)
     scope = (
@@ -234,6 +247,27 @@ def _awaiting_migration(cfg: C.Config, store: SkillStore, change: dict) -> bool:
     )
 
 
+def _new_support_count(store: SkillStore, name: str) -> int:
+    """Count only background creations in the rolling window, ignoring damaged ledger entries."""
+    now = time.time()
+    cutoff = now - C.SUPPORT_NEW_WINDOW_DAYS * 86400
+    try:
+        rows = jsonl_rows(store.ledger)
+    except OSError:
+        return 0
+    return sum(
+        row.get("action") == "write_file"
+        and row.get("source") == "background"
+        and row.get("name") == name
+        and "before" in row
+        and row["before"] is None
+        and isinstance(row.get("ts"), (int, float))
+        and not isinstance(row["ts"], bool)
+        and cutoff < row["ts"] <= now
+        for row in rows
+    )
+
+
 def settle_begin(cfg: C.Config, store: SkillStore, change: dict, evidence: str) -> dict:
     """Build a serializable judgment context, or finish a proposal that already conflicts."""
     if finished := _settle_exhausted(cfg, store, change):
@@ -244,12 +278,55 @@ def settle_begin(cfg: C.Config, store: SkillStore, change: dict, evidence: str) 
     if (change.get("folder") and store.resolved_folder(change["name"]) != change["folder"]) or (
         sha(store.read(change["name"], change.get("file_path", ""))) != change.get("base")
     ):
+        return _settle_conflict(cfg, store, change, "it changed since")
+    if (
+        change["action"] == "write_file"
+        and change.get("file_path")
+        and change.get("base") is None
+        and change.get("source", "background") == "background"
+        and _new_support_count(store, change["name"]) >= C.SUPPORT_NEW_PER_SKILL
+    ):
+        finding = {
+            "severity": "major",
+            "issue": "the skill already gained a new reference this week",
+            "fix": "extend an existing topical file",
+        }
+        record = store.reject(change, [[finding]], reason="support write refused", related=False)
+        notify.push(cfg, _rejected_line(store, change, 1, record))
+        if change.get("run_id"):
+            refused = (change["file_path"], Path(change["file_path"]).name)
+            for other in store.staged_changes(change["run_id"]):
+                if (
+                    other["name"] == change["name"]
+                    and other["action"] in ("edit", "patch")
+                    and not other.get("file_path")
+                    and any(path in (other.get("content") or "") for path in refused)
+                ):
+                    record = store.reject(other, [[finding]], reason="support write refused", related=False)
+                    store.drop_staged(other["id"])
+                    notify.push(
+                        cfg,
+                        f"{notify.PREFIX} skipped paired change to skill {other['name']}: "
+                        f"it names the refused support file; proposal kept {notify.link(record)}",
+                    )
         store.drop_staged(change["id"])
-        notify.push(cfg, f"{notify.PREFIX} skipped a proposed change to skill {change['name']}: it changed since")
-        return {"outcome": "conflict", "name": change["name"]}
-    current = store.read(change["name"]) or ""  # SKILL.md, also for support files: the judge needs the skill
+        store.drop_evidence_if_done(change.get("run_id"))
+        return {"outcome": "rejected", "name": change["name"]}
+    current = store.read(change["name"]) or ""
     current_chars = len(current)
+    if fp := change.get("file_path"):
+        before = store.read(change["name"], fp)
+        if before is not None:
+            current += f"\n\n<file path={json.dumps(fp)}>\n{before}\n</file>"
     change = dict(change)
+    if change.get("run_id") and change.get("file_path"):
+        paired = [
+            {"id": c["id"], "action": c["action"], "content": redact(c.get("content") or "")}
+            for c in store.staged_changes(change["run_id"])
+            if c["name"] == change["name"] and c["action"] in ("edit", "patch") and not c.get("file_path")
+        ]
+        if paired:
+            change["skill_changes"] = paired
     if change.get("run_id") and not change.get("file_path"):
         support = [
             {"file_path": c["file_path"], "content": redact(c.get("content") or "")}
@@ -265,7 +342,7 @@ def settle_begin(cfg: C.Config, store: SkillStore, change: dict, evidence: str) 
             ):
                 continue
             try:
-                fp = Path(row["path"]).relative_to(store.home / change["name"]).as_posix()
+                fp = Path(row["path"]).resolve().relative_to((store.home / change["name"]).resolve()).as_posix()
             except (KeyError, ValueError):
                 continue
             content = store.read(change["name"], fp)
@@ -276,6 +353,7 @@ def settle_begin(cfg: C.Config, store: SkillStore, change: dict, evidence: str) 
     current = redact(current)
     about = f"{change['name']} {change.get('content') or ''} {change.get('new_string') or ''}"
     others = [l for l in existing_skills(store, about) if not l.startswith(f"- {change['name']}:")]
+    others += repo_skills.listing(cfg, change.get("review_start"))
     return {
         "kind": "judge",
         "proposed": change,
@@ -286,8 +364,42 @@ def settle_begin(cfg: C.Config, store: SkillStore, change: dict, evidence: str) 
         "others": others,
         "rounds": [],
         "revisions": 0,
-        "request": judge.judge_request(cfg, change, store.diff(change), current, evidence, others),
+        "request": judge.judge_request(
+            cfg, change, store.diff(change), current, evidence, others, include_repository=False
+        ),
     }
+
+
+def _settle_conflict(cfg: C.Config, store: SkillStore, change: dict, reason: str) -> dict:
+    record = None
+    if change["action"] == "write_file" and change.get("file_path"):
+        finding = {"severity": "major", "issue": reason, "fix": "review the current file and re-propose"}
+        record = store.reject(change, [[finding]], reason="conflict")
+    store.drop_staged(change["id"])
+    kept = f"; proposal kept {notify.link(record)}" if record else ""
+    notify.push(cfg, f"{notify.PREFIX} skipped {change['name']}: {reason}{kept}")
+    return {"outcome": "conflict", "name": change["name"]}
+
+
+def _rejected_line(store: SkillStore, change: dict, count: int, record: Path) -> str:
+    line = notify.rejected_line(change["name"], count, record)
+    if not change.get("run_id") or change.get("file_path"):
+        return line
+    current = store.read(change["name"]) or ""
+    for row in jsonl_rows(store.ledger):
+        if (
+            row.get("run_id") != change["run_id"]
+            or row.get("name") != change["name"]
+            or row.get("action") != "write_file"
+        ):
+            continue
+        try:
+            path = Path(row["path"]).relative_to(store.home / change["name"]).as_posix()
+        except (KeyError, ValueError):
+            continue
+        if path.startswith("references/") and path not in current:
+            return line + "; the reference was added but isn't indexed"
+    return line
 
 
 def _settle_exhausted(cfg: C.Config, store: SkillStore, change: dict) -> dict | None:
@@ -305,7 +417,7 @@ def _settle_exhausted(cfg: C.Config, store: SkillStore, change: dict) -> dict | 
         return None
     finding = {"severity": "major", "issue": issue, "fix": "re-propose after fixing the reply failure"}
     record = store.reject(change, [[finding]], reason=reason)
-    notify.push(cfg, notify.rejected_line(change["name"], 1, record))
+    notify.push(cfg, _rejected_line(store, change, 1, record))
     store.drop_staged(change["id"])
     store.drop_evidence_if_done(change.get("run_id"))
     return {"outcome": "rejected", "name": change["name"]}
@@ -344,8 +456,8 @@ def _settle_finish(cfg: C.Config, store: SkillStore, context: dict, verdict: dic
         store.drop_staged(change["id"])
         notify.push(
             cfg,
-            notify.rejected_line(
-                change["name"], len([f for f in rounds[-1] if f["severity"] != "minor"]), store.reject(change, rounds)
+            _rejected_line(
+                store, change, len([f for f in rounds[-1] if f["severity"] != "minor"]), store.reject(change, rounds)
             ),
         )
         return {"outcome": "rejected", "name": change["name"]}
@@ -366,15 +478,14 @@ def _settle_finish(cfg: C.Config, store: SkillStore, context: dict, verdict: dic
             else:
                 touch_skill(d, change["name"], change.get("project"))
         origin = (change["project"], change.get("where") or "") if change.get("project") else None
-        line = notify.skill_line(change["action"], change["name"], res["path"], "pass")
+        line = notify.skill_line(change["action"], change["name"], res["path"], "pass", base=change.get("base"))
         notify.push(cfg, line, tell=notify.skill_form(change["action"], change["name"]), project=origin)
         return {
             "outcome": "applied",
             "name": change["name"],
             **({"warnings": res["warnings"]} if res.get("warnings") else {}),
         }
-    notify.push(cfg, f"{notify.PREFIX} skipped {change['name']}: {res.get('error')}")
-    return {"outcome": "conflict", "name": change["name"]}
+    return _settle_conflict(cfg, store, change, res.get("error", "it changed since"))
 
 
 def settle_answer(cfg: C.Config, store: SkillStore, context: dict, text: str) -> dict:
@@ -406,6 +517,7 @@ def settle_answer(cfg: C.Config, store: SkillStore, context: dict, text: str) ->
                     current,
                     verdict["findings"],
                     evidence,
+                    include_repository=False,
                 ),
             }
         revised = judge.revision_answer({"result": text}, context["request"]["label"])
@@ -426,7 +538,9 @@ def settle_answer(cfg: C.Config, store: SkillStore, context: dict, text: str) ->
             "kind": "judge",
             "change": change,
             "revisions": context["revisions"] + 1,
-            "request": judge.judge_request(cfg, change, store.diff(change), current, evidence, context["others"]),
+            "request": judge.judge_request(
+                cfg, change, store.diff(change), current, evidence, context["others"], include_repository=False
+            ),
         }
     except claude.ClaudeError as e:
         return settle_defer(cfg, store, context, e, paid_reply=True)
@@ -451,7 +565,13 @@ def settle(cfg: C.Config, store: SkillStore, change: dict, evidence: str) -> tup
                 if context["kind"] == "judge":
                     answer = judge.judge(cfg, change, store.diff(change), current, evidence, context["others"])
                 else:
-                    revised = judge.revise(cfg, change, current, context["rounds"][-1], evidence)
+                    revised = judge.revise(
+                        cfg,
+                        {**change, "current_chars": context.get("current_chars", change.get("current_chars"))},
+                        current,
+                        context["rounds"][-1],
+                        evidence,
+                    )
                     answer = {"content": revised}
             except claude.AuthError:
                 modreview._complete(cfg, step)
@@ -502,7 +622,7 @@ def pending_change(cfg: C.Config, store: SkillStore, change: dict, expire: bool 
             "fix": "re-propose",
         }
         record = store.reject(change, [[finding]], reason="expired")
-        notify.push(cfg, notify.rejected_line(change["name"], 1, record))
+        notify.push(cfg, _rejected_line(store, change, 1, record))
         return {"outcome": "expired", "name": change["name"]}
     return None
 
@@ -701,18 +821,19 @@ def prepare_review(cfg: C.Config, sid: str, transcript: Path, cwd: str, reason: 
     budget_chars = len(with_legend(body)) if caller else len(body)
     from . import outcome
 
+    support_reads = []
     try:
         observed, _, _ = sessions.exchanges_since(
             transcript, s.get("reviewed_uuid"), listed=listed, caller=caller, outcomes=True
         )
         body = outcome.append(body, observed, start)
+        support_reads = [read for exchange in observed for read in exchange.get("support_reads", [])]
     except Exception:
         logging.getLogger(__name__).exception("Optional OUTCOME evidence omitted")
     if caller:  # last: append's own cut could take the legend, and this cut reaches only the oldest conversation
         body = with_legend(body)
     store.save_evidence(run_id, body)
-    listing = existing_skills(store, body, set(s.get("skills", [])))
-    prompt = redact(digest(body, s, cwd, listing))
+    listing, prompt = review_prompt(cfg, store, body, s, cwd, start, do_skills)
     if tidy:
         prompt += "\n\n<memory_tidy>\n" + json.dumps(tidy, ensure_ascii=False) + "\n</memory_tidy>"
     project = s.get("project") or modes.key
@@ -736,6 +857,7 @@ def prepare_review(cfg: C.Config, sid: str, transcript: Path, cwd: str, reason: 
         "signals": signals,
         "last_uuid": last_uuid,
         "listing": listing,
+        **({"support_reads": support_reads} if support_reads else {}),
     }
 
 

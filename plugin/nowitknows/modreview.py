@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -328,6 +329,12 @@ def _owns_step(cfg: C.Config, step: dict) -> bool:
     )
 
 
+def _delivered_request(cfg: C.Config, step: dict) -> dict:
+    if step.get("kind") in ("judge", "reviser"):
+        return worker.judge.with_repository_sources(cfg, step["request"], step["change"])
+    return step["request"]
+
+
 def _request(cfg: C.Config, step: dict) -> dict:
     if not _owns_step(cfg, step):
         return DONE
@@ -345,7 +352,7 @@ def _request(cfg: C.Config, step: dict) -> dict:
     ):
         release(cfg)
         return DONE
-    request = step["request"]
+    request = _delivered_request(queued, step)
     system = request["system"]
     if request.get("schema"):
         system += "\nReturn only a JSON object matching this schema:\n" + json.dumps(request["schema"])
@@ -433,6 +440,7 @@ def skill_context(cfg: C.Config, plan: dict, cwd: str) -> tuple[str, dict]:
     """Full SKILL.md text for the reviewer, loaded skills first. With bounded skills, on either host, it inlines only
     the skills the session loaded and those background runs may change; the rest keep their <user_skills> line."""
     store, texts, viewed, size = SkillStore(cfg), [], {}, 0
+    folders, inventories = {}, []
     loaded = {*plan["s"].get("skills", []), *plan["s"].get("codex_read_skills", [])}
     chain = native.settings_chain(Path(cwd), cfg.claude_home)
     paths = {}
@@ -475,14 +483,86 @@ def skill_context(cfg: C.Config, plan: dict, cwd: str) -> tuple[str, dict]:
         if text is None:
             continue
         body = masked_delivery(text, cfg)
-        body += support_context(store, path.parent if path else store.folder(name))
+        inventory = support_context(store, path.parent if path else store.folder(name))
+        body += inventory
         if size + len(body) > C.MOD_SKILL_CHARS:
             continue
+        if inventory:
+            inventories.append(len(texts))
         texts.append(f"<skill name={json.dumps(redact(name))}>\n{size_label(text)}\n{body}\n</skill>")
         size += len(body)
+        if name in loaded:
+            folders[name] = path.parent if path else store.folder(name)
         if own_text == text:
             viewed[name] = sha(text)
+    supplied = set()
+    for read in plan.get("support_reads", []) if plan.get("do_skills") else []:
+        for name, folder in folders.items():
+            if store.writable(name) is not None:
+                continue
+            try:
+                if "name" in read:
+                    if read["name"] != name:
+                        continue
+                    fp = norm_file(read["file_path"])
+                else:
+                    read_path = Path(read["file_path"])
+                    if not read_path.is_absolute():
+                        read_path = Path(read.get("cwd") or plan.get("start") or cwd) / read_path
+                    fp = read_path.resolve().relative_to(folder.resolve()).as_posix()
+                path = store.file(name, fp, folder=folder) if fp else None
+                if not path or norm_file(fp) == "" or (name, fp) in supplied or not path.is_file():
+                    continue
+                own = store.file(name, fp)
+                if not own or own.resolve() != path.resolve():
+                    continue
+                text = path.read_text(encoding="utf-8")
+                body = (
+                    f"<skill name={json.dumps(redact(name))} file_path={json.dumps(redact(fp))}>\n"
+                    f"{size_label(text)}\n{masked_delivery(text, cfg)}\n</skill>"
+                )
+                if size + len(body) + 2 > C.MOD_SKILL_CHARS:
+                    continue
+                texts.append(body)
+                size += len(body) + 2
+                supplied.add((name, fp))
+                viewed[f"{name}/{fp}"] = sha(text)
+            except (OSError, ValueError, RuntimeError):
+                continue
+    if any("/" in key for key in viewed):
+        for index in inventories:
+            before, _, after = texts[index].rpartition(
+                "<support_files>\nExisting support files cannot be replaced; use a new path.\n"
+            )
+            texts[index] = (
+                before + "<support_files>\nOnly support files supplied in full below may be replaced.\n" + after
+            )
     return "\n\n".join(texts), viewed
+
+
+def review_contract(viewed: dict) -> str:
+    if not any("/" in key for key in viewed):
+        return CONTRACT
+    return (
+        CONTRACT.replace("support file path, only for write_file", "support file path, for patch/edit/write_file")
+        .replace(
+            "Only patch/edit a file supplied in full; no overwriting\n"
+            "existing support files because their contents are not supplied.",
+            "Only patch/edit/overwrite a file supplied in full, using its file_path for support files.",
+        )
+        .replace(
+            "For create/edit, content is the ENTIRE SKILL.md",
+            "For create or SKILL.md edit, content is the ENTIRE SKILL.md",
+        )
+    )
+
+
+def review_schema(viewed: dict) -> dict:
+    if not any("/" in key for key in viewed):
+        return REVIEW_SCHEMA
+    schema = copy.deepcopy(REVIEW_SCHEMA)
+    schema["properties"]["skills"]["items"]["anyOf"][1]["properties"]["file_path"] = {"type": "string"}
+    return schema
 
 
 def memory_context(cfg: C.Config, plan: dict, targets: list[str] | None = None) -> str:
@@ -555,11 +635,11 @@ def _review(cfg: C.Config, flow: dict, sid: str, transcript: str, cwd: str, reas
             "queue_file": queue_file,
             "request": {
                 "model": cfg.reviewer_model,
-                "system": system + CONTRACT,
+                "system": system + review_contract(viewed),
                 "prompt": plan["prompt"] + extra,
                 "label": "reflector",
                 "run_id": plan["run_id"],
-                **({"schema": REVIEW_SCHEMA} if cfg.host == "cursor" else {}),
+                **({"schema": review_schema(viewed)} if cfg.host == "cursor" else {}),
             },
         },
     )
@@ -734,8 +814,9 @@ def _apply(cfg: C.Config, step: dict, text: str) -> None:
         effect_id = step["id"] + ":skill:" + str(i)
         existing = next((c for c in store.staged_changes(plan["run_id"]) if c.get("effect_id") == effect_id), None)
         if existing:
-            if existing["action"] != "archive" and not existing.get("file_path"):
-                step["viewed"][existing["name"]] = sha(existing["content"])
+            if existing["action"] != "archive":
+                key = existing["name"] + ("/" + existing["file_path"] if existing.get("file_path") else "")
+                step["viewed"][key] = sha(existing["content"])
             continue
         if not isinstance(change, dict) or not all(
             isinstance(change.get(k, ""), str)
@@ -744,18 +825,32 @@ def _apply(cfg: C.Config, step: dict, text: str) -> None:
             continue
         name, action = change.get("name", ""), change.get("action")
         fp = norm_file(change.get("file_path"))
-        if action in ("patch", "edit") and (fp or step["viewed"].get(name) != sha(store.read(name))):
-            continue
         if name in refused:
             continue
-        if action == "write_file" and store.read(name, fp) is not None:
+        key = name + ("/" + fp if fp else "")
+        try:
+            current = store.read(name, fp)
+        except (OSError, ValueError):
+            if not fp:
+                raise
             refused.add(name)
+            continue
+        if action == "write_file" and not fp:
+            refused.add(name)
+            continue
+        needs_view = action in ("patch", "edit") or (
+            action == "write_file" and (current is not None or key in step["viewed"])
+        )
+        if needs_view and (key not in step["viewed"] or step["viewed"][key] != sha(current)):
+            if fp:
+                refused.add(name)
             continue
         if action == "archive" and name not in store.owned():
             continue
         prepared = store.prepare(change)
-        if action == "write_file" and not prepared.get("ok"):
+        if fp and (not prepared.get("ok") or (needs_view and prepared.get("base") != step["viewed"].get(key))):
             refused.add(name)
+            continue
         if f"SKILL.md over {C.SKILL_BODY_MAX} chars" in prepared.get("errors", []):
             notify.push(cfg, notify.oversized_line(name, store.keep_oversized(change, plan["run_id"])))
         if prepared.get("ok"):
@@ -768,11 +863,12 @@ def _apply(cfg: C.Config, step: dict, text: str) -> None:
                     "run_id": plan["run_id"],
                     "project": plan["project"],
                     "where": plan.get("where") or "",
+                    "review_start": plan["start"],
                     "triggers": [t for t in triggers if isinstance(t, str)] if isinstance(triggers, list) else [],
                 },
             )
-            if action != "archive" and not prepared.get("file_path"):
-                step["viewed"][name] = sha(prepared["content"])
+            if action != "archive":
+                step["viewed"][key] = sha(prepared["content"])
     for i, change in enumerate(changes):
         if not isinstance(change, dict) or change.get("name") not in refused:
             continue
@@ -781,7 +877,11 @@ def _apply(cfg: C.Config, step: dict, text: str) -> None:
         record_id = uuid.uuid5(uuid.NAMESPACE_URL, effect_id).hex
         if not (store.rejected / f"{record_id}.md").exists():
             record = {**change, "id": record_id, "run_id": plan["run_id"]}
-            finding = {"severity": "major", "issue": "support write refused", "fix": "use a new support-file path"}
+            finding = {
+                "severity": "major",
+                "issue": "support write refused",
+                "fix": "read the current support file in a later review, or use a new path",
+            }
             path = store.reject(record, [[finding]], reason="support write refused", related=False)
             notify.push(
                 cfg,
@@ -934,7 +1034,7 @@ def drain_cli(cfg: C.Config) -> None:
             return
         with paid.capture(saved, {"kind": "module", "step": step["id"]}) as receipt:
             try:
-                output = model.run(saved, **step["request"])
+                output = model.run(saved, **_delivered_request(saved, step))
             except claude.AuthError:
                 raise
             except claude.ClaudeError as error:

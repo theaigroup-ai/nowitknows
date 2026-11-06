@@ -9,6 +9,7 @@ import json
 import os
 import queue
 import re
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -579,6 +580,34 @@ def imported(path: Path) -> bool:
     return False
 
 
+def command_read(command: str) -> str | None:
+    """Recognize one literal file read without shell operators or substitutions."""
+    if not isinstance(command, str) or re.search(r"[;&|<>`$\n\r]", command):
+        return None
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return None
+    if len(words) < 2:
+        return None
+    tool, *args = words
+    tool = Path(tool).name
+    if tool in ("head", "tail"):
+        if len(args) == 3 and args[0] == "-n" and re.fullmatch(r"[+\-]?\d+", args[1]):
+            args = args[2:]
+        elif len(args) == 2 and re.fullmatch(r"-\d+", args[0]):
+            args = args[1:]
+    elif tool == "sed":
+        if len(args) != 3 or args[0] != "-n" or not re.fullmatch(r"\d+(?:,\d+|,\$)?p", args[1]):
+            return None
+        args = args[2:]
+    elif tool != "cat":
+        return None
+    if len(args) != 1 or args[0].startswith("-") or re.search(r"[*?\[\]~]", args[0]):
+        return None
+    return args[0]
+
+
 def _grouped(path: Path, *, listed: bool, classify: bool, caller: bool = False, outcomes: bool = False) -> list[dict]:
     """Exchanges before trimming, each part with whether a copied row made it; see `exchanges`."""
     copies = listed or imported(path)
@@ -608,7 +637,7 @@ def _grouped(path: Path, *, listed: bool, classify: bool, caller: bool = False, 
             own = e if len(results) == 1 else None  # the host records a decision only on an entry with one result
             for b in results:
                 if at := calls.pop(b.get("tool_use_id"), None):
-                    part, i, call = at
+                    part, i, call, cwd = at
                     name = str(call.get("name") or "")
                     args = call.get("input") if isinstance(call.get("input"), dict) else {}
                     command = call.get("outcome_command", args.get("command", args.get("cmd", "")))
@@ -620,6 +649,28 @@ def _grouped(path: Path, *, listed: bool, classify: bool, caller: bool = False, 
 
                         if observed := event(call, b, status, own):
                             part["outcomes"][i] = observed
+                        fp = args.get("file_path")
+                        if name == "Codex.command":
+                            cwd = call.get("command_cwd", "")
+                            fp = (
+                                command_read(command)
+                                if b.get("outcome_complete") is True
+                                and type(b.get("outcome_exit_code")) is int
+                                and b["outcome_exit_code"] == 0
+                                and isinstance(cwd, str)
+                                and Path(cwd).is_absolute()
+                                else None
+                            )
+                        if part is cur and status == " -> ok" and isinstance(fp, str) and fp:
+                            fp = safety.redact(fp)
+                            if C.tool_name(name) == "skill_view" and isinstance(args.get("name"), str):
+                                part.setdefault("support_reads", []).append(
+                                    {"name": safety.redact(args["name"]), "file_path": fp}
+                                )
+                            elif name in ("Read", "ReadFile", "Codex.command"):
+                                part.setdefault("support_reads", []).append(
+                                    {"file_path": fp, "cwd": safety.redact(cwd)}
+                                )
             if said := user_response(e, plans):  # after the outcome, so a rejection follows the call it refused
                 if caller:
                     said = said.replace("USER (", "CALLER (").replace("PLAN (", "CALLER PLAN (")
@@ -651,7 +702,7 @@ def _grouped(path: Path, *, listed: bool, classify: bool, caller: bool = False, 
                     cur["owners"].append(real)
                 if isinstance(b, dict) and b.get("type") == "tool_use":
                     i = len(cur["parts"])
-                    calls[b.get("id")] = (cur, i, b)
+                    calls[b.get("id")] = (cur, i, b, e.get("cwd", ""))
                     if outcomes:
                         from .outcome import event
 
@@ -697,6 +748,7 @@ def exchanges(
                 else {}
             ),
             **({"file_change": True} if x.get("file_change") else {}),
+            **({"support_reads": x["support_reads"]} if x.get("support_reads") else {}),
         }
         for x in _grouped(path, listed=listed, classify=True, caller=caller, outcomes=outcomes)
     ]

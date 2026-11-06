@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "nowitknows",
-  "version": "0.11.6",
+  "version": "0.11.7",
   "description": "NowItKnows for Claude Code: skill-use protocol and router, past-session search, global memory, and background skill learning reviewed by an adversarial judge.",
   "author": {
     "name": "Aron Riley"

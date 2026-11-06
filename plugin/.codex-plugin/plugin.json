@@ -1,6 +1,6 @@
 {
   "name": "nowitknows-codex",
-  "version": "0.11.6",
+  "version": "0.11.7",
   "description": "Learning for Codex: reusable skills, past chat search, personal memory, and background learning reviewed by an independent judge.",
   "author": {
     "name": "Aron Riley"
@@ -15,7 +15,7 @@
       "command": "/bin/sh",
       "args": [
         "-c",
-        "h=${CODEX_HOME:-$HOME/.codex}; case $h in \"~/\"*) h=$HOME/${h#\"~/\"} ;; esac; f=\"$h/plugins/cache/nowitknows/nowitknows-codex/0.11.6/bin/nowitknows.sh\"; [ -f \"$f\" ] || { echo \"nowitknows: no MCP server at $f; add the catalog as the marketplace named nowitknows and reinstall nowitknows-codex\" >&2; exit 1; }; exec /bin/sh \"$f\" --codex mcp"
+        "h=${CODEX_HOME:-$HOME/.codex}; case $h in \"~/\"*) h=$HOME/${h#\"~/\"} ;; esac; f=\"$h/plugins/cache/nowitknows/nowitknows-codex/0.11.7/bin/nowitknows.sh\"; [ -f \"$f\" ] || { echo \"nowitknows: no MCP server at $f; add the catalog as the marketplace named nowitknows and reinstall nowitknows-codex\" >&2; exit 1; }; exec /bin/sh \"$f\" --codex mcp"
       ],
       "env_vars": [
         "CODEX_HOME",

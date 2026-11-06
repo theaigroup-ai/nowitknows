@@ -657,7 +657,9 @@ def post_tool_batch(cfg: C.Config, data: dict) -> dict:
                         touch_skill(d, res.get("name"), s.get("project"))
                     if res.get("action") == "create" and isinstance(res["path"], str):  # pinned below
                         made.append((Path(res["path"]), s.get("project"), s.get("start")))
-                    notices.append(notify.skill_line(res.get("action", ""), res.get("name", ""), res["path"]))
+                    notices.append(
+                        notify.skill_line(res.get("action", ""), res.get("name", ""), res["path"], base=res.get("base"))
+                    )
             elif name in (C.session_tools() + "memory", C.CHILD_TOOLS + "memory"):
                 res = _json_in(call.get("tool_response"))
                 done = [r for r in res.get("results") or [] if r.get("ok") and r.get("path")]

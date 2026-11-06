@@ -815,6 +815,43 @@ def outcome_identity(cfg: C.Config, data: dict, sid: str) -> dict:
     return {"call_id": call_id, "source_offset": offset}
 
 
+def _result_object(value: object, *, blocks: bool = False) -> dict:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return {}
+    if blocks and isinstance(value, list):
+        for block in value:
+            if isinstance(block, dict) and block.get("type") == "text":
+                return _result_object(block.get("text"))
+    return value if isinstance(value, dict) else {}
+
+
+def _mcp_result(value: object) -> tuple[dict, dict]:
+    """Unwrap transport containers without inspecting application rows or prose."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return {}, {}
+    envelope = _result_object(value)
+    while set(envelope) in ({"success"}, {"result"}) and (
+        isinstance(envelope.get("success"), dict) or isinstance(envelope.get("result"), dict)
+    ):
+        envelope = envelope.get("success") if isinstance(envelope.get("success"), dict) else envelope["result"]
+    if "ok" in envelope:
+        return envelope, envelope
+    if isinstance(envelope.get("structuredContent"), dict):
+        return envelope, envelope["structuredContent"]
+    blocks = envelope.get("content", value if isinstance(value, list) else [])
+    if isinstance(blocks, list):
+        for block in blocks:
+            if isinstance(block, dict) and block.get("type") == "text":
+                return envelope, _result_object(block.get("text"))
+    return envelope, envelope
+
+
 def _record_tool_outcome(
     s: dict,
     tool_name: str,
@@ -832,6 +869,13 @@ def _record_tool_outcome(
     background = cursor_transcript._shell_background(norm_name, tool_input)
     if background and status == "ok":
         status = "unknown"
+    if status == "ok" and norm_name in ("Shell", "Bash"):
+        result_safe = []
+        cursor_transcript._hook_shell_command(
+            str(tool_input.get("command", tool_input.get("cmd", ""))), result_safe=result_safe
+        )
+        if result_safe and not all(result_safe):
+            status = "unknown"
     masked = _masked_outcome(text)
     outcome_text = masked if isinstance(masked, str) else json.dumps(masked, ensure_ascii=False)
     exit_match = re.match(r"(?:Error: )?Exit code (-?\d+)\b", outcome_text)
@@ -986,27 +1030,34 @@ def post_tool_use(cfg: C.Config, data: dict) -> dict:
         elif tool_name in ("Write", "StrReplace", "Edit", "MultiEdit") and (edited := hooks._skill_of(cfg, file_path)):
             touch_skill(d, edited, repo)
 
-        outcome_result = {**res, **tool_output} if isinstance(tool_output, dict) else res
-        is_err = False
+        outcome_result = _result_object(tool_output, blocks=True)
         error_evidence = None
-        if bare in ("skill_view", "skill_manage") and outcome_result.get("ok") is False:
-            is_err = True
-            error_evidence = outcome_result.get("error") or outcome_result.get("errors") or "ok: false"
-        elif outcome_result.get("exitCode") not in (None, 0):
-            is_err = True
-            error_evidence = outcome_result.get("output") or f"exit code {outcome_result.get('exitCode')}"
-        elif is_read_err or any(outcome_result.get(k) for k in ("isError", "is_error", "error")):
-            is_err = True
-            error_evidence = outcome_result.get("error") or outcome_result.get("output") or tool_output
+        if norm_tool_name.startswith("mcp__"):
+            envelope, application = _mcp_result(tool_output)
+            status = "unknown"
+            if envelope.get("isError") is True:
+                status, error_evidence = "failed", envelope
+            elif bare is not None and application.get("ok") is False:
+                status, error_evidence = "failed", application
+            elif bare is not None and application.get("ok") is True:
+                status = "ok"
+        else:
+            is_err = (
+                outcome_result.get("success") is False
+                or outcome_result.get("exitCode") not in (None, 0)
+                or any(outcome_result.get(k) for k in ("isError", "is_error", "error", "timedOut"))
+            )
+            status = "failed" if is_err else "ok"
+            if is_err:
+                error_evidence = outcome_result
+            elif norm_tool_name in ("Shell", "Bash") and outcome_result.get("exitCode") != 0:
+                status = "unknown"
         captured = _masked_outcome(error_evidence if error_evidence is not None else tool_output)
         outcome_text = (
             ""
             if captured in (None, "", {}, [])
             else (captured if isinstance(captured, str) else json.dumps(captured, ensure_ascii=False))
         )
-        status = "failed" if is_err else "ok"
-        if norm_tool_name in ("Shell", "Bash") and not is_err and outcome_result.get("exitCode") != 0:
-            status = "unknown"
         _record_tool_outcome(
             s,
             tool_name,
@@ -1197,10 +1248,10 @@ def _run_cursor_steps(cfg: C.Config, sid: str, normalized: Path | None, cwd: str
     calls = 0
     while step.get("action") == "model" and calls < C.CODEX_REVIEW_STEPS:
         stored = modreview._read(cfg.path("mod", "steps", step["step"] + ".json"))
-        request = dict(stored["request"])
-        if stored["kind"] == "reviewer":
-            request["schema"] = modreview.REVIEW_SCHEMA
         saved = worker._queued_cfg(cfg, stored["env"])
+        request = dict(modreview._delivered_request(saved, stored))
+        if stored["kind"] == "reviewer":
+            request.setdefault("schema", modreview.REVIEW_SCHEMA)
         try:
             with paid.capture(saved, {"kind": "module", "step": step["step"]}) as receipt:
                 response = model.run(saved, **request)

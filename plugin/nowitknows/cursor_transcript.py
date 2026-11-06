@@ -282,6 +282,13 @@ def _normalize_tool_call(name: str, raw_input: object, *, identity: bool = False
             safe[target_key] = command_text(v) if target_key == "command" else _redact_text(v)
         else:
             safe[key] = None
+    if (
+        not identity
+        and C.tool_name(tool) == "skill_view"
+        and safe.get("file_path")
+        and isinstance(args.get("name"), str)
+    ):
+        safe["name"] = _redact_text(args["name"])
     if not identity and _shell_background(tool, args):
         safe["run_in_background"] = True
     return tool, safe
@@ -323,16 +330,166 @@ def _input_key(safe_input: dict) -> str:
     ).hexdigest()
 
 
-def _hook_shell_command(command: str) -> str:
-    """Remove the observed Cursor trailer only from a single plain git commit invocation."""
+def _shell_word_end(text: str, pos: int) -> int | None:
+    """Skip shell data, including nested substitutions inside quoted words."""
+    stack = []
+    word_start = pos
+    while pos < len(text):
+        char = text[pos]
+        if stack and stack[-1] in ("'", "$'"):
+            if char == "\\" and stack[-1] == "$'":
+                if pos + 1 == len(text):
+                    return None
+                pos += 2
+                continue
+            if char == "'":
+                stack.pop()
+        elif char == "\\":
+            if pos + 1 == len(text):
+                return None
+            pos += 2
+            continue
+        elif stack and char == stack[-1]:
+            stack.pop()
+        elif text.startswith("$'", pos) and (not stack or stack[-1] not in ('"', "`")):
+            stack.append("$'")
+            pos += 2
+            continue
+        elif char in "'\"`" and (not stack or stack[-1] not in ('"', "`")):
+            stack.append(char)
+        elif text.startswith("$(", pos) and (not stack or stack[-1] != "'"):
+            stack.append(")")
+            pos += 2
+            continue
+        elif char == "(" and (
+            (not stack and re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*\+?=", text[word_start:pos]))
+            or (stack and stack[-1] == ")")
+        ):
+            stack.append(")")
+        elif not stack and (char.isspace() or char in ";&|<>()"):
+            break
+        pos += 1
+    return None if stack else pos
+
+
+def _commit_suffix_safe(suffix: str) -> bool:
+    """Only an AND chain can preserve a commit's zero exit through subsequent commands."""
+    position = 0
+    while position < len(suffix):
+        char = suffix[position]
+        if char in " \t\r":
+            position += 1
+        elif suffix.startswith("\\\n", position) or suffix.startswith("&&", position):
+            position += 2
+        elif char in "\n)" and not suffix[position + 1 :].strip():
+            return True
+        elif char in ";&|<>()\n":
+            return False
+        else:
+            end = _shell_word_end(suffix, position)
+            if end is None or end == position:
+                return False
+            position = end
+    return True
+
+
+def _hook_shell_command(command: str, *, result_safe: list[bool] | None = None) -> str:
+    """Remove Cursor's exact trailer only after an unquoted command-position git commit."""
     literal = 'git commit --trailer "Co-authored-by: Cursor <cursoragent@cursor.com>"'
-    if not command.startswith(literal) or any(part in command for part in ("\n", "\r", "<<", "$", "`")):
-        return command
-    word = r"""(?:[^\s;&|<>()'"\\`$#]|\\[^\r\n]|'[^'\r\n]*'|"(?:\\[^\r\n]|[^"\\\r\n])*")+"""
-    suffix = command[len(literal) :]
-    if not re.fullmatch(rf"(?:[ \t]+{word})*[ \t]*", suffix):
-        return command
-    return "git commit" + suffix
+    position, start = 0, True
+    removals = []
+    heredocs = []
+    redirect = None
+    restore_start = False
+    header = ""
+    conditional = False
+    parentheses, balanced = 0, True
+    while position < len(command):
+        char = command[position]
+        if char in " \t\r":
+            position += 1
+            continue
+        if command.startswith("\\\n", position):
+            position += 2
+            continue
+        if char == "\n":
+            position += 1
+            start = True
+            for delimiter, tabs in heredocs:
+                terminated = False
+                while position < len(command):
+                    end = command.find("\n", position)
+                    end = len(command) if end < 0 else end
+                    line = command[position:end]
+                    position = min(end + 1, len(command))
+                    if (line.lstrip("\t") if tabs else line) == delimiter:
+                        terminated = True
+                        break
+                balanced &= terminated
+            heredocs.clear()
+            continue
+        if char == "#":
+            end = command.find("\n", position)
+            position = len(command) if end < 0 else end
+            continue
+        if start and not header and redirect is None and command.startswith(literal, position):
+            end = position + len(literal)
+            if end == len(command) or command[end].isspace() or command[end] in ";&|<>()":
+                removals.append((position + len("git commit"), end))
+                if result_safe is not None:
+                    result_safe.append(not conditional and _commit_suffix_safe(command[end:]))
+                position, start = end, False
+                continue
+        operator = re.match(r"\d*(?:<<<|<<-|<<|>>|<>|>&|<&|>\||[<>])|&&|\|\||;;|;&|[;&|()]", command[position:])
+        if operator:
+            token = operator[0]
+            conditional |= token == "||"
+            if token == "(":
+                parentheses += 1
+            elif token == ")" and header != "case":
+                parentheses -= 1
+                balanced &= parentheses >= 0
+            position += operator.end()
+            if "<" in token or ">" in token:
+                redirect, restore_start = token.lstrip("0123456789"), start
+            else:
+                start = True
+                if token == ")" and header == "case":
+                    header = ""
+            continue
+        end = _shell_word_end(command, position)
+        if end is None:
+            balanced = False
+            break
+        token = command[position:end]
+        if end == position:
+            break
+        position = end
+        if redirect is not None:
+            if redirect in ("<<", "<<-"):
+                delimiter = re.sub(r"\\(.)|['\"]", lambda m: m[1] or "", token)
+                heredocs.append((delimiter, redirect == "<<-"))
+            redirect, start = None, restore_start
+            continue
+        if header:
+            if token == "do":
+                header, start = "", True
+            continue
+        if start and token in ("for", "select", "case"):
+            conditional = True
+            header = token
+        elif start and token in ("if", "then", "elif", "else", "while", "until", "do", "!", "{", "}"):
+            conditional = True
+            start = True
+        elif start and re.match(r"[A-Za-z_][A-Za-z_0-9]*=", token):
+            continue
+        else:
+            start = False
+    if removals and result_safe is not None and (not balanced or parentheses or heredocs or redirect or header):
+        result_safe.append(False)
+    for begin, end in reversed(removals):
+        command = command[:begin] + command[end:]
+    return command
 
 
 def _identity_fields(name: str, raw_input: object, *, hook: bool = False) -> dict | None:

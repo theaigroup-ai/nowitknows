@@ -51,6 +51,42 @@ def mark(text: str, repo: str = "") -> str:
     return PROJECT if project_mark(text, repo) else GENERAL
 
 
+def skill_mark(path: Path, text: str, repo: str = "", prior: str = "") -> str:
+    """Classify the body; bounded reference detail can only retain an existing project mark."""
+    if mark(text, repo) == PROJECT:
+        return PROJECT
+    if prior != PROJECT:
+        return GENERAL
+    remaining, read, incomplete = C.SCOPE_REFERENCE_CHARS, set(), False
+    root = path.parent.resolve()
+    try:
+        for reference in sorted((path.parent / "references").rglob("*")):
+            if (
+                any(part.startswith(".") for part in reference.relative_to(path.parent).parts)
+                or not reference.is_file()
+            ):
+                continue
+            if not remaining or not reference.resolve().is_relative_to(root):
+                incomplete = True
+                continue
+            try:
+                with reference.open(encoding="utf-8-sig") as stream:
+                    body = stream.read(remaining)
+                    incomplete |= bool(stream.read(1))
+                remaining -= len(body)
+                read.add(reference.relative_to(path.parent).as_posix())
+                if project_mark(body, repo):
+                    return PROJECT
+            except (OSError, ValueError):
+                incomplete = True
+    except (OSError, RuntimeError):
+        incomplete = True
+    named = {name.rstrip(".") for name in re.findall(r"\breferences/[\w.\-/]+", text)}
+    if prior == PROJECT and (incomplete or named - read):
+        return PROJECT
+    return GENERAL
+
+
 def load(cfg: C.Config) -> dict:
     """Scope rows by trigger key; {} without a readable file, when every skill routes everywhere."""
     try:
@@ -163,26 +199,24 @@ def widen(cfg: C.Config, source: dict | None, folder: Path) -> None:
 
 
 def on_apply(cfg: C.Config, action: str, content: str | None, source: dict, project, where) -> dict:
-    """The ledger fields of an applied SKILL.md change: a create's repo key (`project`) and mark (`scope`); a patch or
-    edit of a skill with a scope row its mark again, on the new text with the name of the repo it was learned in."""
+    """The ledger scope fields for a skill body or reference change, classified in its original repository."""
     if action == "create":
         if not (isinstance(project, str) and project):
             return {"project": None, "scope": None}
         return {
             "project": project,
-            "scope": mark(content or "", where if isinstance(where, str) else ""),
+            "scope": skill_mark(Path(source["path"]), content or "", where if isinstance(where, str) else ""),
         }
-    if action not in ("patch", "edit"):
+    if action not in ("patch", "edit", "write_file"):
         return {}
     row = _row(load(cfg), source)
     if row is None:
         return {}
     if row["scope"] == UNKNOWN or not isinstance(row.get("origin"), str):
-        return {"scope": UNKNOWN}
-    if row["scope"] == PROJECT and re.search(r"\breferences/[\w.\-/]+", content or ""):
-        return {"scope": PROJECT}
+        return {} if action == "write_file" else {"scope": UNKNOWN}
     origin = row["repos"].get(row["origin"])
-    return {"scope": mark(content or "", origin if isinstance(origin, str) else "")}
+    value = skill_mark(Path(source["path"]), content or "", origin if isinstance(origin, str) else "", row["scope"])
+    return {} if action == "write_file" and value == row["scope"] else {"scope": value}
 
 
 def applied(cfg: C.Config, entry: dict, source: dict, where: str = "", ledger: list[dict] | tuple = ()) -> None:
@@ -191,7 +225,7 @@ def applied(cfg: C.Config, entry: dict, source: dict, where: str = "", ledger: l
     value, name, ts = entry.get("scope"), entry.get("name"), entry.get("ts")
     create = entry.get("action") == "create" and "project" in entry
     if not create and value not in (PROJECT, GENERAL, UNKNOWN):
-        return  # a support file, or a skill with no row: nothing to record
+        return  # no changed mark or known origin to record
     try:
         with _edit(cfg, durable=True) as rows:
             row = _row(rows, source)
@@ -243,7 +277,7 @@ def pin(cfg: C.Config, path: Path, project, start) -> None:
             return
         folder = Path(start) if isinstance(start, str) and start else None
         where = native.project_name(folder) if folder and native.project_key(folder) == project else ""
-        value, now = mark(path.read_text(encoding="utf-8-sig"), where), round(time.time(), 3)
+        value, now = skill_mark(path, path.read_text(encoding="utf-8-sig"), where), round(time.time(), 3)
     except (OSError, RuntimeError, ValueError) as error:
         _log(cfg, f"a created skill's scope was not pinned to its session's repo: {error}")
         return
@@ -298,6 +332,8 @@ def _fact(row: dict) -> bool:
         return _migrated(row)
     if action == "scope":
         return row.get("source") == "session"
+    if action == "write_file":
+        return "scope" in row
     return action in ("create", "patch", "edit", "restore")
 
 
@@ -745,6 +781,34 @@ def backfill(cfg: C.Config, folder: Path | None = None) -> dict:
                     continue  # the next run derives the new generation's paths and loads together
                 row, fact = _row(current, source), _newest(by_name.get(name, []), name)
                 if row is not None and (name in live or _fresh(row) >= fact):  # current: the loads it lacks
+                    if (
+                        row["scope"] != UNKNOWN
+                        and (skill := store.skill_md(name)).parent.joinpath("references").is_dir()
+                    ):
+                        with contextlib.suppress(OSError, ValueError):
+                            value = skill_mark(
+                                skill,
+                                skill.read_text(encoding="utf-8-sig"),
+                                row["repos"].get(row.get("origin"), ""),
+                                row["scope"],
+                            )
+                            if value != row["scope"]:
+                                row["scope"], row["ts"] = value, now
+                                counts[value] += 1
+                                made += value == PROJECT
+                                entry = {
+                                    "ts": now,
+                                    "action": "scope",
+                                    "name": name,
+                                    "source": "backfill",
+                                    "host": cfg.host,
+                                }
+                                entry.update(
+                                    path=str(skill), skill_source=source, scope=value, project=row.get("origin")
+                                )
+                                append_line(
+                                    store.ledger, json.dumps({**entry, "repos": list(row["repos"]), "fact": fact})
+                                )
                     for repo in sorted(loads.get(name, set()) - set(row["repos"])):
                         row["repos"][repo] = names.get(repo, "")
                         row["ts"], widened = now, widened + 1
@@ -776,7 +840,23 @@ def backfill(cfg: C.Config, folder: Path | None = None) -> dict:
                     for i, c in enumerate(creations)
                 )
                 text = texts.get(name)  # unreadable: routed everywhere until its next change
-                value = mark(text, where.get(origin, "")) if origin and not unsure and text is not None else UNKNOWN
+                prior_scope = (
+                    kept["scope"]
+                    if own and kept["scope"] in (PROJECT, GENERAL)
+                    else next(
+                        (
+                            r["scope"]
+                            for r in reversed(by_name.get(name, []))
+                            if _ts(r) >= since and r.get("scope") in (PROJECT, GENERAL)
+                        ),
+                        "",
+                    )
+                )
+                value = (
+                    skill_mark(store.skill_md(name), text, where.get(origin, ""), prior_scope)
+                    if origin and not unsure and text is not None
+                    else UNKNOWN
+                )
                 current[trigger_key(source)] = {
                     "name": name,
                     "source": source,
@@ -810,7 +890,11 @@ def backfill(cfg: C.Config, folder: Path | None = None) -> dict:
             "to widen it",
             tell={"kind": "scoped", "count": made},
         )
-    out = {"scoped": counts[PROJECT], "general": counts[GENERAL], "unknown": counts[UNKNOWN]} if todo else {"scoped": 0}
+    out = (
+        {"scoped": counts[PROJECT], "general": counts[GENERAL], "unknown": counts[UNKNOWN]}
+        if todo or any(counts.values())
+        else {"scoped": 0}
+    )
     return {**out, "widened": widened} if widened else out
 
 

@@ -101,12 +101,12 @@ def budget_line(used: int, budget: int) -> str:
     )
 
 
-def skill_line(action: str, name: str, path: str, verdict: str | None = None) -> str:
+def skill_line(action: str, name: str, path: str, verdict: str | None = None, *, base: str | None = None) -> str:
     verb = {
         "create": "created skill",
         "patch": "updated skill",
         "edit": "rewrote skill",
-        "write_file": "added a file to skill",
+        "write_file": "updated a file in skill" if base is not None else "added a file to skill",
         "archive": "archived skill",
     }.get(action, f"{action} skill")
     judged = f" (judge: {verdict})" if verdict else ""

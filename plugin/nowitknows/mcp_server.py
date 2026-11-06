@@ -259,9 +259,7 @@ def skill_manage(
     cfg, store = _cfg(), _store()
     if cfg.remote:
         return {"ok": False, "error": NOT_KEPT}
-    if action in ("patch", "edit") and norm_file(file_path):
-        return {"ok": False, "error": "patch and edit change SKILL.md; to replace a support file use write_file"}
-    fp = norm_file(file_path) if action == "write_file" else ""
+    fp = norm_file(file_path) if action in ("patch", "edit", "write_file") else ""
     change = {
         "action": action,
         "name": name,
@@ -272,6 +270,8 @@ def skill_manage(
     }
     key = f"{name}/{fp}"
     existing = store.read(name, fp)
+    if fp and action in ("patch", "edit") and existing is None:
+        return store.prepare(change)
     needs_view = action in ("patch", "edit") or (action == "write_file" and existing is not None)
     if needs_view and _viewed.get(key) != (store.resolved_folder(name), sha(existing)):
         return {
@@ -279,6 +279,8 @@ def skill_manage(
             "error": "read-before-write: call skill_view on this file first (not viewed, or changed since)",
         }
     prepared = store.prepare(change)
+    if fp and needs_view and prepared.get("ok") and prepared.get("base") != sha(existing):
+        return {"ok": False, "error": "read-before-write: call skill_view on this file first (changed since)"}
     staging = C.env("NOWITKNOWS_WRITE_MODE", cfg.env) == "stage"
     if not prepared.get("ok"):
         if staging and f"SKILL.md over {C.SKILL_BODY_MAX} chars" in prepared.get("errors", []):
@@ -292,6 +294,7 @@ def skill_manage(
         origin = {
             "project": C.env("NOWITKNOWS_PROJECT_KEY", cfg.env),
             "where": C.env("NOWITKNOWS_PROJECT_NAME", cfg.env, ""),
+            "review_start": C.env("NOWITKNOWS_START", cfg.env) or C.env("NOWITKNOWS_PROJECT", cfg.env),
         }
         cid = store.stage(prepared, {**meta, **origin})
         if action != "archive":
@@ -309,6 +312,8 @@ def skill_manage(
         except (OSError, RuntimeError, ValueError):  # its folder is gone
             pass
     res = store.apply(prepared, source="user" if user_requested else "session", triggers=triggers)
+    if res.get("ok"):
+        res["base"] = prepared.get("base")
     if res.get("ok") and action != "archive":
         _viewed[key] = (store.resolved_folder(name), sha(store.read(name, fp)))
     return res

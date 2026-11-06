@@ -358,7 +358,7 @@ wheels = [
 
 [[package]]
 name = "nowitknows"
-version = "0.11.6"
+version = "0.11.7"
 source = { virtual = "." }
 dependencies = [
     { name = "cryptography", version = "46.0.3", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
